@@ -188,17 +188,12 @@ function normalizeUrl(url) {
     return url;
 }
 
-// Per Stremio SDK: notWebReady must be true when the URL is http:// or
-// the file is not an MP4 container. Without this, the player may stop
-// after a short period (e.g. ~1 min) and Stremio treats it as "ended",
-// returning to details (movies) or auto-advancing (series episodes).
 function isNotWebReady(url, ext) {
     const isHttps = /^https:\/\//i.test(url);
     const isMp4 = String(ext || '').toLowerCase() === 'mp4';
     return !(isHttps && isMp4);
 }
 
-// Browser-like UA — many Xtream CDNs reject or shortchange non-browser UAs.
 const PROXY_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
 async function xtremioGet(cfg, action, extraParams = '', { timeoutMs = 15000 } = {}) {
@@ -225,25 +220,20 @@ function toIsoDate(s) {
     return isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
-// Xtream providers return `cast`/`genre` as either a comma-separated string or an array.
 function splitList(value) {
     if (!value) return [];
     if (Array.isArray(value)) return value.map(v => String(v).trim()).filter(Boolean);
     return String(value).split(',').map(v => v.trim()).filter(Boolean);
 }
 
-// `backdrop_path` can be an array of URLs or a single URL string.
 function pickBackdrop(value) {
     if (!value) return undefined;
     if (Array.isArray(value)) return value[0] || undefined;
     return String(value) || undefined;
 }
 
-// All in-memory caches share the same TTL.
 const CACHE_TTL = 30 * 60 * 1000;
 
-// Keys must include credentials so two users on the same Xtream host don't
-// share cached catalogs/streams (different accounts can see different content).
 function accountCacheKey(cfg) {
     return `${cfg.serverUrl}\n${cfg.username}\n${cfg.password}`;
 }
@@ -275,7 +265,6 @@ async function getCategories(cfg) {
     return entry;
 }
 
-// Stream list caches - populated on first fetch, reused for catalogs, search and meta
 function createStreamListCache() {
     const map = new Map();
     return {
@@ -654,10 +643,8 @@ app.get(['/:config/catalog/:type/:id.json', '/:config/catalog/:type/:id/:extra.j
                 if (cat) categoryId = cat.category_id;
             }
 
-            // No genre selected and none resolvable -> nothing to show.
             if (!categoryId) return res.json({ metas: [] });
 
-            // Fetch all live channels once (cached), then filter in-memory by selected category.
             const allItems = await getAllLiveStreams(cfg);
             const catIdStr = String(categoryId);
             const selectedGenreLower = (selectedGenre || '').toLowerCase();
@@ -691,7 +678,6 @@ app.get(['/:config/catalog/:type/:id.json', '/:config/catalog/:type/:id/:extra.j
             const cat = cats.movies.find(c => c.category_name === selectedGenre);
             if (!cat) return res.json({ metas: [] });
 
-            // Reuse the full-list cache if available; fall back to per-category fetch.
             const catIdStr = String(cat.category_id);
             const fullList = vodStreamsCache.get(cfg);
             let items = fullList
@@ -708,7 +694,6 @@ app.get(['/:config/catalog/:type/:id.json', '/:config/catalog/:type/:id/:extra.j
             } else if (id === 'xtremio_movies_popular') {
                 items = [...items].sort((a, b) => (parseFloat(b.rating) || 0) - (parseFloat(a.rating) || 0));
             } else if (id === 'xtremio_movies_featured') {
-                // Seeded shuffle based on the day so order is stable across pagination
                 const daySeed = Math.floor(Date.now() / 86400000);
                 items = [...items].sort((a, b) => {
                     const ha = ((parseInt(a.stream_id) || 0) * 2654435761 + daySeed) & 0x7fffffff;
@@ -735,7 +720,6 @@ app.get(['/:config/catalog/:type/:id.json', '/:config/catalog/:type/:id/:extra.j
             const cat = cats.series.find(c => c.category_name === selectedGenre);
             if (!cat) return res.json({ metas: [] });
 
-            // Reuse the full-list cache if available; fall back to per-category fetch.
             const catIdStr = String(cat.category_id);
             const fullList = seriesStreamsCache.get(cfg);
             let items = fullList
@@ -763,7 +747,7 @@ app.get(['/:config/catalog/:type/:id.json', '/:config/catalog/:type/:id/:extra.j
             const page = items.slice(skip, skip + PAGE_SIZE);
             const metas = page.map(s => ({
                 id: `xtremio_series_${s.series_id}`,
-                type: 'series',
+                type: 'XT-Series',
                 name: s.name,
                 poster: s.cover || undefined,
                 posterShape: 'poster'
@@ -772,11 +756,11 @@ app.get(['/:config/catalog/:type/:id.json', '/:config/catalog/:type/:id/:extra.j
             return res.json({ metas, cacheMaxAge: 300, staleRevalidate: 600 });
         }
 
-        // Global search catalogs - fetch all streams once, filter in memory
-        if (id === 'xtremio_search_movies' && extra.search) {
+        if (id === 'xtremio_search_movies') {
+            if (!extra.search) return res.json({ metas: [] });
             const q = extra.search.toLowerCase();
-            const allMovies = await getAllVodStreams(cfg);
-            const filtered = allMovies.filter(s => s.name?.toLowerCase().includes(q));
+            const allVod = await getAllVodStreams(cfg);
+            const filtered = allVod.filter(s => s.name?.toLowerCase().includes(q));
             const page = filtered.slice(skip, skip + PAGE_SIZE);
             const metas = page.map(s => ({
                 id: `xtremio_movie_${s.stream_id}`,
@@ -788,14 +772,15 @@ app.get(['/:config/catalog/:type/:id.json', '/:config/catalog/:type/:id/:extra.j
             return res.json({ metas, cacheMaxAge: 300, staleRevalidate: 600 });
         }
 
-        if (id === 'xtremio_search_series' && extra.search) {
+        if (id === 'xtremio_search_series') {
+            if (!extra.search) return res.json({ metas: [] });
             const q = extra.search.toLowerCase();
             const allSeries = await getAllSeriesStreams(cfg);
             const filtered = allSeries.filter(s => s.name?.toLowerCase().includes(q));
             const page = filtered.slice(skip, skip + PAGE_SIZE);
             const metas = page.map(s => ({
                 id: `xtremio_series_${s.series_id}`,
-                type: 'series',
+                type: 'XT-Series',
                 name: s.name,
                 poster: s.cover || undefined,
                 posterShape: 'poster'
@@ -803,165 +788,206 @@ app.get(['/:config/catalog/:type/:id.json', '/:config/catalog/:type/:id/:extra.j
             return res.json({ metas, cacheMaxAge: 300, staleRevalidate: 600 });
         }
 
-        res.json({ metas: [] });
+        return res.json({ metas: [] });
     } catch (e) {
-        console.error('[catalog] Error:', e.message);
-        res.json({ metas: [] });
+        console.error('[catalog] error:', e);
+        return res.json({ metas: [] });
     }
 });
 
 app.get('/:config/meta/:type/:id.json', async (req, res) => {
     const cfg = decodeConfig(req.params.config);
     if (!cfg) return res.json({ meta: null });
-    const { id, type } = req.params;
-    console.log(`[meta] type=${type} id=${id}`);
+
+    const { type, id } = req.params;
 
     try {
-        if (id.startsWith('xtremio_live_')) {
+        if (type === 'Live TV' && id.startsWith('xtremio_live_')) {
             const streamId = id.replace('xtremio_live_', '');
             const allLive = await getAllLiveStreams(cfg);
-            let s = allLive.find(i => String(i.stream_id) === streamId);
+            const item = allLive.find(s => String(s.stream_id) === streamId);
 
-            if (!s) return res.json({ meta: null });
-            const meta = {
-                id: `xtremio_live_${s.stream_id}`,
-                type: 'Live TV',
-                name: s.name,
-                poster: s.stream_icon || undefined,
-                posterShape: 'square',
-                genres: s.category_name ? [s.category_name] : [],
-                description: s.name || undefined
-            };
-            return res.json({ meta, cacheMaxAge: 300 });
+            if (!item) return res.json({ meta: null });
+
+            return res.json({
+                meta: {
+                    id,
+                    type: 'Live TV',
+                    name: item.name,
+                    poster: item.stream_icon || undefined,
+                    posterShape: 'square',
+                    background: item.stream_icon || undefined,
+                    description: `Live Stream: ${item.name}`
+                }
+            });
         }
 
-        if (id.startsWith('xtremio_movie_')) {
+        if (type === 'XT-Movies' && id.startsWith('xtremio_movie_')) {
             const streamId = id.replace('xtremio_movie_', '');
-            const info = await xtremioGet(cfg, 'get_vod_info', `&vod_id=${streamId}`);
-            const movie = info?.info ?? info ?? {};
-            const cast = splitList(movie.cast);
-            const backdrop = pickBackdrop(movie.backdrop_path);
+            let infoData = null;
+            try {
+                infoData = await xtremioGet(cfg, 'get_vod_info', `&vod_id=${streamId}`);
+            } catch (e) {
+                console.warn(`[meta] get_vod_info failed for ${streamId}:`, e.message);
+            }
 
-            const meta = {
-                id: `xtremio_movie_${streamId}`,
-                type: 'XT-Movies',
-                name: movie.name || movie.o_name || 'Unknown',
-                poster: movie.cover_big || movie.movie_image || undefined,
-                posterShape: 'poster',
-                background: backdrop,
-                description: movie.plot || movie.description || undefined,
-                releaseInfo: movie.releasedate ? String(movie.releasedate) : undefined,
-                genres: splitList(movie.genre),
-                runtime: movie.duration ? String(movie.duration) + ' min' : (movie.episode_run_time ? String(movie.episode_run_time) + ' min' : undefined),
-                director: movie.director || undefined,
-                cast,
-                imdbRating: movie.rating ? String(movie.rating) : undefined,
-                year: parseYear(movie.releasedate),
-                country: movie.country || undefined,
-                trailer: movie.youtube_trailer || undefined
-            };
-            return res.json({ meta, cacheMaxAge: 86400 });
+            const info = infoData?.info || {};
+            const movieData = infoData?.movie_data || {};
+
+            const allVod = await getAllVodStreams(cfg);
+            const baseItem = allVod.find(s => String(s.stream_id) === streamId) || {};
+
+            const title = info.name || baseItem.name || 'Unknown Movie';
+            const poster = info.movie_image || baseItem.stream_icon || undefined;
+            const description = info.plot || info.description || undefined;
+            const releaseDate = toIsoDate(info.releasedate || info.release_date);
+            const year = parseYear(info.releasedate || info.release_date || baseItem.name);
+            const rating = parseFloat(info.rating || baseItem.rating) || undefined;
+            const genre = splitList(info.genre);
+            const director = splitList(info.director);
+            const cast = splitList(info.cast);
+
+            return res.json({
+                meta: {
+                    id,
+                    type: 'XT-Movies',
+                    name: title,
+                    poster,
+                    posterShape: 'poster',
+                    background: pickBackdrop(info.backdrop_path) || poster,
+                    description,
+                    releaseInfo: year ? String(year) : undefined,
+                    released: releaseDate,
+                    imdbRating: rating ? String(rating) : undefined,
+                    genres: genre.length ? genre : undefined,
+                    director: director.length ? director : undefined,
+                    cast: cast.length ? cast : undefined
+                }
+            });
         }
 
-        if (id.startsWith('xtremio_series_')) {
+        if ((type === 'XT-Series' || type === 'series') && id.startsWith('xtremio_series_')) {
             const seriesId = id.replace('xtremio_series_', '');
-            let info = null;
+            let infoData = null;
+
             try {
-                info = await getSeriesInfo(cfg, seriesId);
+                infoData = await getSeriesInfo(cfg, seriesId);
             } catch (e) {
-                const causeMsg = e.cause ? ` (cause: ${e.cause.code || e.cause.message || e.cause})` : '';
-                console.warn(`[meta] getSeriesInfo(${seriesId}) failed after retries: ${e.message}${causeMsg}`);
+                console.warn(`[meta] getSeriesInfo failed for ${seriesId}:`, e.message);
             }
-            const series = info?.info ?? info ?? {};
+
+            const info = infoData?.info || {};
+            const episodesObj = infoData?.episodes || {};
+
+            const allSeries = await getAllSeriesStreams(cfg);
+            const baseItem = allSeries.find(s => String(s.series_id) === seriesId) || {};
+
+            const title = info.name || baseItem.name || 'Unknown Series';
+            const poster = info.cover || baseItem.cover || undefined;
+            const description = info.plot || undefined;
+            const releaseDate = toIsoDate(info.releaseDate || info.release_date);
+            const year = parseYear(info.releaseDate || info.release_date || baseItem.name);
+            const rating = parseFloat(info.rating || baseItem.rating) || undefined;
+            const genre = splitList(info.genre);
+            const director = splitList(info.director);
+            const cast = splitList(info.cast);
 
             const videos = [];
-            const episodes = info?.episodes ?? {};
-            for (const [seasonNum, eps] of Object.entries(episodes)) {
-                if (!Array.isArray(eps)) continue;
-                for (const ep of eps) {
-                    videos.push({
-                        id: `xtremio_episode_${seriesId}:${seasonNum}:${ep.id}`,
-                        title: ep.title || `Episode ${ep.episode_num}`,
-                        season: parseInt(seasonNum),
-                        episode: parseInt(ep.episode_num) || 1,
-                        released: toIsoDate(ep.info?.releasedate) || '1970-01-01T00:00:00.000Z',
-                        overview: ep.info?.plot || undefined,
-                        thumbnail: ep.info?.movie_image || undefined
-                    });
+            if (episodesObj && typeof episodesObj === 'object') {
+                Object.keys(episodesObj).forEach(seasonNum => {
+                    const epList = episodesObj[seasonNum];
+                    if (Array.isArray(epList)) {
+                        epList.forEach(ep => {
+                            const sNum = parseInt(seasonNum) || 1;
+                            const eNum = parseInt(ep.episode_num) || 1;
+                            videos.push({
+                                id: `xtremio_episode_${seriesId}_${ep.id}_${ep.container_extension || 'mp4'}`,
+                                title: ep.title || `Episode ${eNum}`,
+                                season: sNum,
+                                episode: eNum,
+                                released: toIsoDate(ep.added),
+                                thumbnail: ep.info?.movie_image || poster,
+                                overview: ep.info?.plot || undefined
+                            });
+                        });
+                    }
+                });
+            }
+
+            return res.json({
+                meta: {
+                    id,
+                    type: 'XT-Series',
+                    name: title,
+                    poster,
+                    posterShape: 'poster',
+                    background: pickBackdrop(info.backdrop_path) || poster,
+                    description,
+                    releaseInfo: year ? String(year) : undefined,
+                    released: releaseDate,
+                    imdbRating: rating ? String(rating) : undefined,
+                    genres: genre.length ? genre : undefined,
+                    director: director.length ? director : undefined,
+                    cast: cast.length ? cast : undefined,
+                    videos
                 }
-            }
-
-            const hasContent = Boolean(series.name || videos.length);
-            if (!hasContent) {
-                console.warn(`[meta] no usable data for series ${seriesId}`);
-                return res.json({ meta: null });
-            }
-
-            const cast = splitList(series.cast);
-            const backdrop = pickBackdrop(series.backdrop_path);
-
-            const meta = {
-                id: `xtremio_series_${seriesId}`,
-                type: 'series',
-                name: series.name || 'Unknown',
-                poster: series.cover || undefined,
-                posterShape: 'poster',
-                background: backdrop,
-                description: series.plot || undefined,
-                releaseInfo: series.releaseDate ? String(series.releaseDate) : undefined,
-                genres: splitList(series.genre),
-                runtime: series.episode_run_time ? String(series.episode_run_time) + ' min' : undefined,
-                director: series.director || undefined,
-                cast,
-                imdbRating: series.rating ? String(series.rating) : undefined,
-                year: parseYear(series.releaseDate),
-                videos
-            };
-            return res.json({ meta, cacheMaxAge: 3600 });
+            });
         }
 
-        res.json({ meta: null });
+        return res.json({ meta: null });
     } catch (e) {
-        console.error('[meta] Error:', e.message);
-        res.json({ meta: null });
+        console.error('[meta] error:', e);
+        return res.json({ meta: null });
     }
 });
 
 app.get('/:config/stream/:type/:id.json', async (req, res) => {
     const cfg = decodeConfig(req.params.config);
     if (!cfg) return res.json({ streams: [] });
-    const { id, type } = req.params;
-    console.log(`[stream] type=${type} id=${id}`);
+
+    const { type, id } = req.params;
+    const base = normalizeUrl(cfg.serverUrl);
 
     try {
-        const { username, password } = cfg;
-        const serverUrl = normalizeUrl(cfg.serverUrl);
-
-        // --- Handle xTremio's own IDs ---
-        if (id.startsWith('xtremio_live_')) {
+        if (type === 'Live TV' && id.startsWith('xtremio_live_')) {
             const streamId = id.replace('xtremio_live_', '');
-            return res.json({
-                streams: [
-                    { url: `${serverUrl}/live/${username}/${password}/${streamId}.m3u8`, title: 'HLS' },
-                    { url: `${serverUrl}/live/${username}/${password}/${streamId}.ts`, title: 'MPEG-TS' }
-                ],
-                cacheMaxAge: 3600
-            });
-        }
+            const streamUrl = `${base}/live/${encodeURIComponent(cfg.username)}/${encodeURIComponent(cfg.password)}/${streamId}.m3u8`;
 
-        if (id.startsWith('xtremio_movie_')) {
-            const streamId = id.replace('xtremio_movie_', '');
-            const info = await xtremioGet(cfg, 'get_vod_info', `&vod_id=${streamId}`);
-            const ext = info?.movie_data?.container_extension || 'mp4';
-            const proxyUrl = `${getBaseUrl(req)}/${req.params.config}/proxy/movie/${streamId}.${ext}`;
             return res.json({
                 streams: [
                     {
-                        url: proxyUrl,
-                        title: '▶ Play',
+                        name: 'xTremio',
+                        title: 'Live TV Stream',
+                        url: streamUrl,
                         behaviorHints: {
-                            notWebReady: isNotWebReady(proxyUrl, ext),
-                            bingeGroup: `xtremio-movie-${ext}`
+                            notWebReady: isNotWebReady(streamUrl, 'm3u8'),
+                            proxyHeaders: { 'User-Agent': PROXY_USER_AGENT }
+                        }
+                    }
+                ]
+            });
+        }
+
+        if (type === 'XT-Movies' && id.startsWith('xtremio_movie_')) {
+            const streamId = id.replace('xtremio_movie_', '');
+
+            let infoData = null;
+            try {
+                infoData = await xtremioGet(cfg, 'get_vod_info', `&vod_id=${streamId}`);
+            } catch {}
+
+            const ext = infoData?.movie_data?.container_extension || 'mp4';
+            const streamUrl = `${base}/movie/${encodeURIComponent(cfg.username)}/${encodeURIComponent(cfg.password)}/${streamId}.${ext}`;
+
+            return res.json({
+                streams: [
+                    {
+                        name: 'xTremio',
+                        title: `Movie Stream (${ext.toUpperCase()})`,
+                        url: streamUrl,
+                        behaviorHints: {
+                            notWebReady: isNotWebReady(streamUrl, ext),
+                            proxyHeaders: { 'User-Agent': PROXY_USER_AGENT }
                         }
                     }
                 ]
@@ -969,286 +995,35 @@ app.get('/:config/stream/:type/:id.json', async (req, res) => {
         }
 
         if (id.startsWith('xtremio_episode_')) {
-            // Format: xtremio_episode_{seriesId}:{season}:{episodeId}
-            const [seriesId, , episodeId] = id.replace('xtremio_episode_', '').split(':');
+            const parts = id.replace('xtremio_episode_', '').split('_');
+            const seriesId = parts[0];
+            const episodeId = parts[1];
+            const ext = parts[2] || 'mp4';
 
-            const findExt = (data) => {
-                const episodes = data?.episodes ?? {};
-                for (const eps of Object.values(episodes)) {
-                    if (!Array.isArray(eps)) continue;
-                    const ep = eps.find(e => String(e.id) === episodeId);
-                    if (ep) return ep.container_extension || 'mp4';
-                }
-                return null;
-            };
+            const streamUrl = `${base}/series/${encodeURIComponent(cfg.username)}/${encodeURIComponent(cfg.password)}/${episodeId}.${ext}`;
 
-            const info = await getSeriesInfo(cfg, seriesId);
-            let ext = findExt(info);
-            if (!ext) {
-                console.warn(`[stream] episode ${episodeId} not found in series ${seriesId} info; defaulting to mp4`);
-                ext = 'mp4';
-            }
-
-            const proxyUrl = `${getBaseUrl(req)}/${req.params.config}/proxy/series/${episodeId}.${ext}`;
             return res.json({
                 streams: [
                     {
-                        url: proxyUrl,
-                        title: '▶ Play',
+                        name: 'xTremio',
+                        title: `Episode Stream (${ext.toUpperCase()})`,
+                        url: streamUrl,
                         behaviorHints: {
-                            notWebReady: isNotWebReady(proxyUrl, ext),
-                            bingeGroup: `xtremio-series-${seriesId}-${ext}`
+                            notWebReady: isNotWebReady(streamUrl, ext),
+                            proxyHeaders: { 'User-Agent': PROXY_USER_AGENT }
                         }
                     }
                 ]
             });
         }
 
-        res.json({ streams: [] });
+        return res.json({ streams: [] });
     } catch (e) {
-        console.error('[stream] Error:', e.message);
-        res.json({ streams: [] });
+        console.error('[stream] error:', e);
+        return res.json({ streams: [] });
     }
 });
 
-// Stream proxy. Xtream providers 302-redirect to a CDN URL that carries
-// a short-lived signed token (~60s). Handing that URL directly to
-// Stremio causes "playback error" after ~1 minute when the token
-// expires. By proxying every range request through the addon, we
-// re-resolve the origin URL (and get a fresh token) for each request.
-app.all('/:config/proxy/:kind/:file', async (req, res) => {
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-        return res.status(405).end('method not allowed');
-    }
-    const cfg = decodeConfig(req.params.config);
-    if (!cfg) return res.status(401).end('unauthorized');
-
-    const { kind, file } = req.params;
-    if (!['movie', 'series', 'live'].includes(kind)) {
-        return res.status(400).end('bad kind');
-    }
-    const match = /^([^./]+)\.([A-Za-z0-9]+)$/.exec(file);
-    if (!match) return res.status(400).end('bad file');
-    const [, streamId, ext] = match;
-
-    const serverUrl = normalizeUrl(cfg.serverUrl);
-    const upstreamUrl = `${serverUrl}/${kind}/${encodeURIComponent(cfg.username)}/${encodeURIComponent(cfg.password)}/${streamId}.${ext}`;
-
-    const headers = { 'User-Agent': PROXY_USER_AGENT };
-    if (req.headers.range) headers['Range'] = req.headers.range;
-    if (req.headers['if-range']) headers['If-Range'] = req.headers['if-range'];
-
-    const controller = new AbortController();
-    const abort = () => {
-        if (!controller.signal.aborted) {
-            try { controller.abort(); } catch {}
-        }
-    };
-    req.on('close', abort);
-    req.on('aborted', abort);
-
-    const isAbortErr = (e) => e && (e.name === 'AbortError' || e.code === 'ABORT_ERR' || controller.signal.aborted);
-
-    let upstream;
-    try {
-        upstream = await fetch(upstreamUrl, {
-            method: 'GET',
-            headers,
-            redirect: 'follow',
-            signal: controller.signal
-        });
-    } catch (e) {
-        if (!isAbortErr(e)) {
-            console.warn(`[proxy] upstream fetch failed for ${kind}/${streamId}.${ext}: ${e.message}`);
-        }
-        if (!res.headersSent) res.status(502).end('upstream fetch failed');
-        return;
-    }
-
-    res.status(upstream.status);
-
-    // Forward headers relevant for seekable playback.
-    const forward = [
-        'content-type',
-        'content-length',
-        'content-range',
-        'accept-ranges',
-        'last-modified',
-        'etag'
-    ];
-    for (const h of forward) {
-        const v = upstream.headers.get(h);
-        if (v) res.setHeader(h, v);
-    }
-    if (!upstream.headers.get('accept-ranges')) {
-        res.setHeader('Accept-Ranges', 'bytes');
-    }
-    res.setHeader('Cache-Control', 'no-store');
-
-    if (req.method === 'HEAD' || !upstream.body) {
-        return res.end();
-    }
-
-    const nodeStream = Readable.fromWeb(upstream.body);
-    nodeStream.on('error', (e) => {
-        if (!isAbortErr(e)) {
-            console.warn(`[proxy] stream error for ${kind}/${streamId}.${ext}: ${e.message}`);
-        }
-        if (!res.headersSent) res.status(502);
-        res.end();
-    });
-    res.on('error', () => abort());
-    res.on('close', () => {
-        abort();
-        nodeStream.destroy();
-    });
-    nodeStream.pipe(res);
-});
-
-app.get('/', (req, res) => {
-    res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>xTremio &mdash; Stremio Addon</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Stremio addon that exposes any Xtream Codes IPTV provider as Live TV, Movies and Series.">
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-            color: #fff;
-            padding: 20px;
-            text-align: center;
-        }
-        .wrap { max-width: 560px; width: 100%; }
-        .logo {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 72px; height: 72px;
-            background: linear-gradient(135deg, #7c4dff 0%, #5c6bc0 100%);
-            border-radius: 20px;
-            margin-bottom: 24px;
-            box-shadow: 0 10px 30px rgba(124,77,255,0.4);
-        }
-        .logo svg { width: 38px; height: 38px; color: #fff; }
-        h1 { font-size: 36px; font-weight: 700; margin-bottom: 12px; letter-spacing: -0.5px; }
-        .tagline { font-size: 17px; color: rgba(255,255,255,0.75); margin-bottom: 36px; line-height: 1.5; }
-        .features {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 12px;
-            margin-bottom: 36px;
-        }
-        .feature {
-            background: rgba(255,255,255,0.06);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 12px;
-            padding: 16px 10px;
-            font-size: 13px;
-            color: rgba(255,255,255,0.85);
-        }
-        .feature b { display: block; color: #fff; font-size: 14px; margin-bottom: 4px; }
-        .btn {
-            display: inline-flex; align-items: center; gap: 10px;
-            padding: 16px 36px;
-            background: linear-gradient(135deg, #7c4dff 0%, #5c6bc0 100%);
-            color: #fff; text-decoration: none;
-            border-radius: 12px;
-            font-size: 16px; font-weight: 600;
-            transition: transform 0.2s, box-shadow 0.2s;
-            box-shadow: 0 8px 20px rgba(124,77,255,0.3);
-        }
-        .btn:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(124,77,255,0.5); }
-        .btn svg { width: 20px; height: 20px; }
-        .links {
-            margin-top: 28px;
-            font-size: 14px;
-            color: rgba(255,255,255,0.6);
-        }
-        .links a {
-            color: rgba(255,255,255,0.85);
-            text-decoration: none;
-            border-bottom: 1px solid rgba(255,255,255,0.3);
-            padding-bottom: 1px;
-        }
-        .links a:hover { color: #fff; border-bottom-color: #fff; }
-        .footer {
-            margin-top: 40px;
-            font-size: 12px;
-            color: rgba(255,255,255,0.4);
-            line-height: 1.6;
-        }
-        @media (max-width: 520px) {
-            h1 { font-size: 28px; }
-            .features { grid-template-columns: 1fr; }
-        }
-    </style>
-</head>
-<body>
-    <div class="wrap">
-        <div class="logo">
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-        </div>
-        <h1>xTremio</h1>
-        <p class="tagline">A Stremio addon that turns your Xtream Codes IPTV provider into browseable Live TV, Movies, and Series catalogs.</p>
-
-        <div class="features">
-            <div class="feature"><b>Live TV</b>Watch your channels</div>
-            <div class="feature"><b>Movies &amp; Series</b>Full VOD catalog</div>
-            <div class="feature"><b>Global Search</b>Across everything</div>
-        </div>
-
-        <a href="/configure" class="btn">
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-            Install Addon
-        </a>
-
-        <div class="links">
-            <a href="https://github.com/izemhsn/xTremio-stremio-addon" target="_blank" rel="noopener">View on GitHub</a>
-        </div>
-
-        <div class="footer">
-            This is a self-hosted technical gateway. No media is hosted here.<br>
-            You must supply your own legally obtained Xtream Codes account.
-        </div>
-    </div>
-</body>
-</html>`);
-});
-
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', uptime: process.uptime() });
-});
-
-const server = app.listen(PORT, HOST, () => {
-    console.log(`Addon running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
-    console.log(`Configure: http://localhost:${PORT}/configure`);
-});
-
-server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-        console.error(`Port ${PORT} is already in use. Kill the existing process or use a different port: PORT=3001 npm start`);
-    } else {
-        console.error('Server error:', err.message);
-    }
-    process.exit(1);
-});
-
-process.on('SIGTERM', () => { console.log('SIGTERM received, shutting down...'); server.close(() => process.exit(0)); });
-process.on('SIGINT', () => { console.log('SIGINT received, shutting down...'); server.close(() => process.exit(0)); });
-process.on('uncaughtException', (err) => {
-    // AbortErrors are expected when a client disconnects mid-stream from the proxy.
-    if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) return;
-    console.error('Uncaught exception:', err);
-});
-process.on('unhandledRejection', (err) => {
-    if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) return;
-    console.error('Unhandled rejection:', err);
+app.listen(PORT, HOST, () => {
+    console.log(`xTremio Addon listening on http://${HOST}:${PORT}`);
 });
